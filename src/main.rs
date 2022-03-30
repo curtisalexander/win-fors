@@ -1,69 +1,75 @@
-use std::{
-    ffi::{CStr, CString},
-    fs::File,
-    os::windows::io::AsRawHandle,
-    path::PathBuf,
-};
+use std::{error::Error, path::PathBuf, process::exit};
 
 use path_abs::PathAbs;
 use windows::{
-    core::PCSTR,
+    core::PCWSTR,
     Win32::{
-        Foundation::{GetLastError, HANDLE},
+        Foundation::HANDLE,
         Storage::FileSystem::{
-            CreateFileA, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING,
+            CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING,
         },
     },
 };
 
+struct WString(Vec<u16>);
+
+impl WString {
+    fn from_str(s: &str) -> Self {
+        Self(
+            s.encode_utf16().chain(std::iter::once(0x0000)).collect::<Vec<u16>>()
+        )
+    }
+
+    fn as_ptr(&self) -> *const u16 {
+        let s_ref: &Vec<u16> = &self.0.as_ref();
+        s_ref.as_ptr() as *const u16
+    }
+}
 
 // https://docs.microsoft.com/en-us/windows/win32/secauthz/finding-the-owner-of-a-file-object-in-c--
-fn main() {
+fn run() -> Result<(), Box<dyn Error>> {
+    // Example file - README.md in this repository
     let path = PathBuf::new().join(env!("CARGO_MANIFEST_DIR"));
-    let readme_path = PathAbs::new(path.clone())
-        .unwrap()
-        .as_path()
-        .join("README.md");
-    // let readme_path = path.join("README.md");
-    let readme_path = readme_path.as_os_str().to_str().unwrap();
-    //let readme_path2 = readme_path.as_os_str().to_str().unwrap();
-    // let readme_path = String::from("README.md");
-    let readme_path_as_cstring = CString::new(readme_path)
-        .unwrap()
-        .into_raw() as *const u8;
-        //.as_bytes_with_nul()
-    //let readme_path_as_cstring = b"README.md\0".as_ptr() as *const u8;
-    let pcstr = PCSTR(readme_path_as_cstring);
-    // let pcstr = PCSTR(CString::new(readme_path).unwrap().as_bytes_with_nul().as_ptr());
+    let readme_path = PathAbs::new(path.clone())?.as_path().join("README.md");
 
     println!("path is {:#?}", path);
     println!("readme_path is {:#?}", readme_path);
 
+    let path_as_str = readme_path
+        .as_os_str()
+        .to_str()
+        .ok_or_else(|| format!("Unable to convert {:#?} to string", readme_path))?;
+
+    let wstring = WString::from_str(path_as_str);
+    let wstring_ptr = wstring.as_ptr();
+    let pcwstr = PCWSTR(wstring_ptr);
+
     // File handle
     let handle: HANDLE = unsafe {
-        CreateFileA(
-            pcstr,
+        CreateFileW(
+            pcwstr,
             FILE_GENERIC_READ,
             FILE_SHARE_READ,
             std::ptr::null_mut(),
             OPEN_EXISTING,
             FILE_ATTRIBUTE_NORMAL,
-            None
+            None,
         )
     };
-    let error = unsafe { GetLastError() };
-    println!("Last error is {:#?}", error);
+
+    if let Err(e) = handle.ok() {
+        panic!("Error with {:#?}: {:#?}", pcwstr, e);
+    }
 
     println!("Handle is {:#X?}", handle);
 
-    //let handle = File::open(readme_path).unwrap().as_raw_handle();
-    //println!("Handle is {:#?}", handle);
+    Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {
-        assert_eq!(2 + 2, 4);
+fn main() {
+    if let Err(e) = run() {
+        println!("Stopping with error: {}", e);
+        exit(1);
     }
+    exit(0);
 }
