@@ -28,6 +28,7 @@ impl WideString {
         Self(s.encode_wide().chain(std::iter::once(0)).collect())
     }
 
+    #[allow(dead_code)]
     fn from_str(s: &str) -> Self {
         Self(s.encode_utf16().chain(std::iter::once(0)).collect())
     }
@@ -67,8 +68,6 @@ fn run() -> Result<(), Box<dyn Error>> {
 
     // SecurityInfo
     let mut psidowner = PSID::default();
-    //std::ptr::null_mut();
-    // let mut psd = std::ptr::null_mut();
     let mut sd: *mut SECURITY_DESCRIPTOR = &mut SECURITY_DESCRIPTOR::default() as *mut SECURITY_DESCRIPTOR;
 
     let rc = unsafe {
