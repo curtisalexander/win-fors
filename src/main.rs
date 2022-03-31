@@ -1,4 +1,5 @@
 use std::os::windows::ffi::OsStrExt;
+use std::string::FromUtf16Error;
 use std::{error::Error, ffi::OsStr, path::PathBuf, process::exit};
 
 use path_abs::PathAbs;
@@ -8,7 +9,7 @@ use windows::{
         Foundation::{GetLastError, ERROR_SUCCESS, HANDLE, PSID},
         Security::{
             Authorization::{GetSecurityInfo, SE_FILE_OBJECT},
-            LookupAccountSidW, OWNER_SECURITY_INFORMATION, SECURITY_DESCRIPTOR, SidTypeUnknown
+            LookupAccountSidW, OWNER_SECURITY_INFORMATION, SECURITY_DESCRIPTOR, SID_NAME_USE, SidTypeUnknown
         },
         Storage::FileSystem::{
             CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING,
@@ -16,6 +17,7 @@ use windows::{
     },
 };
 
+#[derive(Debug)]
 struct WideString(Vec<u16>);
 
 impl WideString {
@@ -43,6 +45,12 @@ impl WideString {
         v.resize(capacity, 0);
         Self(v)
     }
+
+    #[allow(dead_code)]
+    fn to_string(&self) -> Result<String, FromUtf16Error> {
+        let v = &self.0;
+        String::from_utf16(&v[..v.len()])
+    }
 }
 
 // https://docs.microsoft.com/en-us/windows/win32/secauthz/finding-the-owner-of-a-file-object-in-c--
@@ -54,14 +62,14 @@ fn run() -> Result<(), Box<dyn Error>> {
     println!("path is {:#?}", path);
     println!("readme_path is {:#?}", readme_path);
 
-    let wstring = WideString::from_os_str(readme_path.as_os_str());
-    let wstring_ptr = wstring.as_const_ptr();
-    let pcwstr = PCWSTR(wstring_ptr);
+    let path_as_wstring = WideString::from_os_str(readme_path.as_os_str());
+    let path_as_wstring_ptr = path_as_wstring.as_const_ptr();
+    let path_as_pcwstr = PCWSTR(path_as_wstring_ptr);
 
     // File handle
     let handle: HANDLE = unsafe {
         CreateFileW(
-            pcwstr,
+            path_as_pcwstr,
             FILE_GENERIC_READ,
             FILE_SHARE_READ,
             std::ptr::null_mut(),
@@ -72,7 +80,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     };
 
     if let Err(e) = handle.ok() {
-        panic!("Error with {:#?}: {:#?}", pcwstr, e);
+        panic!("Error with {:#?}: {:#?}", path_as_pcwstr, e);
     }
 
     println!("Handle is {:#X?}", handle);
@@ -103,27 +111,42 @@ fn run() -> Result<(), Box<dyn Error>> {
     }
 
     // Lookup Account Sid
-    let name_size = 256;
-    let name_size_ptr = name_size as *mut u32;
-    let name = PWSTR(WideString::new(name_size).as_ptr());
-    let domain_name_size = 256;
-    let domain_name_size_ptr = domain_name_size as *mut u32;
-    let domain_name = PWSTR(WideString::new(domain_name_size).as_ptr());
-    let mut e = SidTypeUnknown;
+    let mut name_size = 256 as u32;
+    let mut domain_size = 256 as u32;
+
+    let name_as_wstring = WideString::new(name_size as usize);
+    let name_as_wstring_ptr = name_as_wstring.as_ptr();
+    let name_as_pwstr = PWSTR(name_as_wstring_ptr);
+
+    let domain_as_wstring = WideString::new(domain_size as usize);
+    let domain_as_wstring_ptr = domain_as_wstring.as_ptr();
+    let domain_as_pwstr = PWSTR(domain_as_wstring_ptr);
+
+    let euse = &mut SidTypeUnknown.to_owned() as *mut SID_NAME_USE;
 
     let las_rc = unsafe {
         LookupAccountSidW(
             None,
-            &psidowner,
-            name,
-            name_size_ptr,
-            domain_name,
-            domain_name_size_ptr,
-            &mut e
+            psidowner,
+            name_as_pwstr,
+            &mut name_size,
+            domain_as_pwstr,
+            &mut domain_size,
+            euse
         )
     };
 
-    println!("name is {:#?}", name);
+    if las_rc.0 == 0 {
+        let last_error = unsafe { GetLastError() };
+        println!("Error code is {:#?}", last_error);
+    } else {
+        println!("name is {:#?}", name_as_wstring.to_string()?);
+    }
+
+    // let name_as_string =  unsafe { & *((name_as_pwstr.0) as *mut WideString) };
+    // let name_as_string = name_as_string.to_string()?;
+    // println!("name is {:#?}", name_as_string);
+    // println!("name is {:#?}", name_as_string);
 
     Ok(())
 }
