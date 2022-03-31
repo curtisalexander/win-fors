@@ -1,15 +1,19 @@
-use std::os::windows::ffi::OsStrExt;
-use std::string::FromUtf16Error;
-use std::{error::Error, ffi::OsStr, path::PathBuf, process::exit};
+use std::{
+    error::Error, ffi::OsStr, os::windows::ffi::OsStrExt, path::PathBuf, process::exit,
+    string::FromUtf16Error,
+};
 
+use colored::Colorize;
+use log::debug;
 use path_abs::PathAbs;
 use windows::{
-    core::{PWSTR, PCWSTR},
+    core::{PCWSTR, PWSTR},
     Win32::{
         Foundation::{GetLastError, ERROR_SUCCESS, HANDLE, PSID},
         Security::{
             Authorization::{GetSecurityInfo, SE_FILE_OBJECT},
-            LookupAccountSidW, OWNER_SECURITY_INFORMATION, SECURITY_DESCRIPTOR, SID_NAME_USE, SidTypeUnknown
+            LookupAccountSidW, SidTypeUnknown, OWNER_SECURITY_INFORMATION, SECURITY_DESCRIPTOR,
+            SID_NAME_USE,
         },
         Storage::FileSystem::{
             CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING,
@@ -49,7 +53,7 @@ impl WideString {
     #[allow(dead_code)]
     fn to_string(&self) -> Result<String, FromUtf16Error> {
         let v = &self.0;
-        String::from_utf16(&v[..v.len()])
+        String::from_utf16(&v[..(v.len() - 1)]) // remove trailing null
     }
 }
 
@@ -59,8 +63,11 @@ fn run() -> Result<(), Box<dyn Error>> {
     let path = PathBuf::new().join(env!("CARGO_MANIFEST_DIR"));
     let readme_path = PathAbs::new(path.clone())?.as_path().join("README.md");
 
-    println!("path is {:#?}", path);
-    println!("readme_path is {:#?}", readme_path);
+    debug!("path is {:#?}", path);
+    debug!(
+        "File path is {}",
+        format!("{:#?}", readme_path).bright_yellow()
+    );
 
     let path_as_wstring = WideString::from_os_str(readme_path.as_os_str());
     let path_as_wstring_ptr = path_as_wstring.as_const_ptr();
@@ -81,9 +88,9 @@ fn run() -> Result<(), Box<dyn Error>> {
 
     if let Err(e) = handle.ok() {
         panic!("Error with {:#?}: {:#?}", path_as_pcwstr, e);
+    } else {
+        debug!("Handle is {:#X?}", handle);
     }
-
-    println!("Handle is {:#X?}", handle);
 
     // Security Info
     let mut psidowner = PSID::default();
@@ -105,14 +112,14 @@ fn run() -> Result<(), Box<dyn Error>> {
 
     if gsi_rc != ERROR_SUCCESS.0 {
         let last_error = unsafe { GetLastError() };
-        println!("Error code is {:#?}", last_error);
+        panic!("Error code is {:#?}", last_error);
     } else {
-        println!("psidowner is {:#?}", psidowner);
+        debug!("psidowner is {:#?}", psidowner);
     }
 
     // Lookup Account Sid
-    let mut name_size = 256 as u32;
-    let mut domain_size = 256 as u32;
+    let mut name_size = 0 as u32;
+    let mut domain_size = 0 as u32;
 
     let name_as_wstring = WideString::new(name_size as usize);
     let name_as_wstring_ptr = name_as_wstring.as_ptr();
@@ -124,6 +131,7 @@ fn run() -> Result<(), Box<dyn Error>> {
 
     let euse = &mut SidTypeUnknown.to_owned() as *mut SID_NAME_USE;
 
+    // Call to get size of name_size and domain_size
     let las_rc = unsafe {
         LookupAccountSidW(
             None,
@@ -132,21 +140,50 @@ fn run() -> Result<(), Box<dyn Error>> {
             &mut name_size,
             domain_as_pwstr,
             &mut domain_size,
-            euse
+            euse,
         )
     };
 
     if las_rc.0 == 0 {
         let last_error = unsafe { GetLastError() };
-        println!("Error code is {:#?}", last_error);
+        debug!("Error code is {:#?}", last_error);
+        debug!("name_size {:#?}", name_size);
+        debug!("domain_size {:#?}", domain_size);
     } else {
-        println!("name is {:#?}", name_as_wstring.to_string()?);
+        panic!("Expecting an error when calling LookupAccountSidW initially");
     }
 
-    // let name_as_string =  unsafe { & *((name_as_pwstr.0) as *mut WideString) };
-    // let name_as_string = name_as_string.to_string()?;
-    // println!("name is {:#?}", name_as_string);
-    // println!("name is {:#?}", name_as_string);
+    // Call again, this time with appropriately sized buffers
+    let name_as_wstring = WideString::new(name_size as usize);
+    let name_as_wstring_ptr = name_as_wstring.as_ptr();
+    let name_as_pwstr = PWSTR(name_as_wstring_ptr);
+
+    let domain_as_wstring = WideString::new(domain_size as usize);
+    let domain_as_wstring_ptr = domain_as_wstring.as_ptr();
+    let domain_as_pwstr = PWSTR(domain_as_wstring_ptr);
+
+    let las_rc = unsafe {
+        LookupAccountSidW(
+            None,
+            psidowner,
+            name_as_pwstr,
+            &mut name_size,
+            domain_as_pwstr,
+            &mut domain_size,
+            euse,
+        )
+    };
+
+    if las_rc.0 == 0 {
+        let last_error = unsafe { GetLastError() };
+        panic!("Error code is {:#?}", last_error);
+    } else {
+        println!(
+            "File {} is owned by {}",
+            format!("{:#?}", readme_path).bright_yellow(),
+            name_as_wstring.to_string()?.bright_blue()
+        );
+    }
 
     Ok(())
 }
